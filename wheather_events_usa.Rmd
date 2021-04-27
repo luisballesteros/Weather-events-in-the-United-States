@@ -1,0 +1,423 @@
+---
+title: "Most Impactful Weather Events on Health and Economy in the United States between 1950 and 2011"
+output: 
+  html_document:
+    keep_md: true
+---
+```{r setoptions,echo=TRUE}
+
+```
+## Synopsis
+
+In this analysis, the NOAA storm database is used to examine and rank storms in 
+terms of population health hazard and economic consequences from 1950 to 2011
+in the United States.
+
+
+Property and crop damage data are derived from the original data and their 
+scaling factor.
+
+
+Event types are mapped to the correct set using REGEX and the amatch function.
+
+
+From the bar charts of total fatalities, injuries, and total and average 
+property and crop damage, we draw the following conclusions:
+
+* Tornadoes cause the highest number of fatalities and injuries. 
+* Floods are the greatest cause of property damage followed by hurricanes and 
+tornadoes, although the most damaging on average per event are hurricanes and 
+Storm Surge/Tide.
+* Drought, followed by floods and hurricanes are the cause of the greatest 
+damage to crops, although, again, the most damaging on average per event are 
+hurricanes.
+
+
+## Data Processing
+Load libraries and delete variables
+
+```{r library-load}
+library(plyr)
+library(dplyr)
+library(data.table)
+library(chron)
+# library(lattice)
+library(ggplot2)
+library(gridExtra)
+library(stringdist)
+library(stringi)
+# library(lubridate)
+rm(list=ls())
+```
+
+Download file to local "data" folder
+```{r}
+# Create data folder if it does not exist
+if (!file.exists("data")) {
+        dir.create("data")
+}
+# Download file to local "data" folder if not exists if it does not exist
+if (!file.exists("./data/StormData.csv.bz2")) {
+        url <- "https://d396qusza40orc.cloudfront.net/repdata%2Fdata%2FStormData.csv.bz2"
+        fileUrl <- url
+        download.file(fileUrl, destfile = "./data/StormData.csv.bz2", 
+                      method = "curl")
+        dateDownloaded <- date()
+        dateDownloaded 
+}
+
+```
+
+The "df" data frame is created with fread and the data structure and type of 
+each variable is checked.
+```{r import-data, cache=TRUE}
+# library(R.utils)
+# system.time(csv_ <- bunzip2("data/StormData.csv.bz2", remove = FALSE))
+# time elapsed 10.585
+# system.time(bunzip2("data/StormData.csv.bz2", "xxx.csv", remove = FALSE, skip = TRUE))
+# time elapsed 5.766
+# system.time(dataset <- fread("xxx.csv"))
+# time elapsed 31.087
+# system.time(dataset <- read.csv("xxx.csv"))
+
+# time elapsed 11.930
+# system.time(df <- fread("./data/StormData.csv.bz2"))
+
+# option 1: bunzip2 + fread = 10.585 + 11.930 = 22.515
+# option 2: bunzip2 + read.csv = 10.585 + 31.087 = 41.672
+# option 3: fread: 11.930
+# fastest option: option 3 fread
+# Create a "Data Frame" with "fread"
+# Only the variables to be used in the analysis are selected.
+df <- fread("./data/StormData.csv.bz2", select = c("EVTYPE", "FATALITIES", "INJURIES", "PROPDMG", "PROPDMGEXP", "CROPDMG", "CROPDMGEXP"))
+# head(df)
+str(df)
+# summary(df)
+dim(df)
+
+```
+There are 902297 records in 7 selected variables that match the expected values.
+
+
+The 'CROPDMGEXP' is the exponent values for 'CROPDMG' (crop damage).
+```{r, cache=TRUE}
+unique(df$CROPDMGEXP)
+```
+
+In the same way, 'PROPDMGEXP' is the exponent values for 'PROPDMG' 
+(property damage).
+```{r, cache=TRUE}
+unique(df$PROPDMGEXP)
+```
+
+
+We convert the characters to lower case.
+```{r, cache=TRUE}
+df$CROPDMGEXP <- tolower(df$CROPDMGEXP)
+unique(df$CROPDMGEXP)
+df$PROPDMGEXP <- tolower(df$PROPDMGEXP)
+unique(df$PROPDMGEXP)
+
+```
+
+The types of exponents of CROPDMGEXP and PROPDMGEXP are replaced by numerical
+exponents in order to multiply them by the corresponding attribute. ^[This 
+article ["How To Handle Exponent Value of PROPDMGEXP and CROPDMGEXP"](https://rstudio-pubs-static.s3.amazonaws.com/58957_37b6723ee52b455990e149edde45e5b6.html)
+discusses this topic in more depth.]
+
+
+```{r CROPDMGEXP-PROPDMGEXP, cache=TRUE}
+# We replace the letters b = 10^9, m = 10^6, k = 10^6, h = 10^2. 
+# The numbers are replaced by 10^The number.
+# The symbols "-", "+" and "?" are replaced by 0.
+# They are converted to numeric type.
+
+old <- c("k", "m", "",  "b", "+", "0", "5", "6", "?", "4", "2", "3", "h", "7",
+         "-", "1", "8")
+new <- c(10^3, 10^6, 0, 10^9, 1, 0, 10^5, 10^6, 0, 10^4, 10^2, 10^3, 10^2, 10^7,
+         0, 10, 10^8)
+df$PROPDMGEXP <- as.numeric(mapvalues(df$PROPDMGEXP, from=old, to=new))
+unique(df$PROPDMGEXP)
+old <- c("", "m", "k", "b", "?", "0", "2")
+new <- c(0, 10^6, 10^3, 10^9, 0, 0, 10^2)
+df$CROPDMGEXP <- as.numeric(mapvalues(df$CROPDMGEXP, from=old, to=new))
+unique(df$CROPDMGEXP)
+```
+
+prop_damage and crop_damage are calculated from PROPDMG * PROPDMGEXP and 
+CROPDMG * CROPDMGEXP.
+```{r prop_crop_damage, cache=TRUE}
+df$prop_damage <- df$PROPDMG * df$PROPDMGEXP
+df$crop_damage <- df$CROPDMG * df$CROPDMGEXP
+```
+
+
+The "evtype" field should have a maximum of 48 distinct values. However, it 
+has 985 distinct values due to erroneous mappings.
+
+```{r, cache=TRUE}
+length(unique(df$EVTYPE))
+```
+
+In order to map correctly, we performed different steps:
+
+
+1. we pass the values to lowercase with "tolower".
+2. we correct the spelling errors with "sub".
+3. we change values with "ifelse" and "grepl" by unifying categories and 
+reducing the number of categories to 235
+4. With the function amatch we map the 111 values to the 48 possible types 
+
+```{r EVTYPE, cache=TRUE}
+
+df$EVTYPE <- tolower(df$EVTYPE)
+df$EVTYPE <- stri_trim_left(df$EVTYPE)
+
+df$EVTYPE <- sub("tstm|tunderstorm|thuderstorm", "thunderstorm", df$EVTYPE)
+df$EVTYPE <- sub("flooding|floods", "flood", df$EVTYPE)
+df$EVTYPE <- sub("winds", "wind", df$EVTYPE)
+df$EVTYPE <- sub("hvy", "heavy", df$EVTYPE)
+
+
+df$EVTYPE <- ifelse(grepl("^thun", df$EVTYPE), "thunderstorm wind", df$EVTYPE)
+df$EVTYPE <- ifelse(grepl("torn", df$EVTYPE), "tornado", df$EVTYPE)
+df$EVTYPE <- ifelse(grepl("hurr", df$EVTYPE) | grepl("typh", df$EVTYPE), 
+                    "hurricane (typhoon)", df$EVTYPE)
+df$EVTYPE <- ifelse(grepl("tropical storm", df$EVTYPE), "tropical storm", df$EVTYPE)
+df$EVTYPE <- ifelse(grepl("light\\S", df$EVTYPE), "lightning", df$EVTYPE)
+df$EVTYPE <- ifelse(grepl("hail", df$EVTYPE) & !grepl("marine", df$EVTYPE), 
+                    "hail", df$EVTYPE)
+df$EVTYPE <- ifelse(grepl("flash flood", df$EVTYPE), "flash flood", df$EVTYPE)
+df$EVTYPE <- ifelse(grepl("flood", df$EVTYPE) & grepl("coas", df$EVTYPE), 
+                    "coastal flood", df$EVTYPE)
+df$EVTYPE <- ifelse(grepl("flood", df$EVTYPE) & grepl("lake", df$EVTYPE), 
+                    "lakeshore flood", df$EVTYPE)
+df$EVTYPE <- ifelse(grepl("flood", df$EVTYPE) & !grepl("lake", df$EVTYPE) & 
+                    !grepl("coast", df$EVTYPE) & !grepl("flash", df$EVTYPE),
+                    "flood", df$EVTYPE)
+df$EVTYPE <- ifelse(grepl("flash", df$EVTYPE), "flash flood", df$EVTYPE)
+df$EVTYPE <- ifelse(grepl("volcan", df$EVTYPE), "volcanic ash", df$EVTYPE)
+df$EVTYPE <- ifelse(grepl("thund", df$EVTYPE) & !grepl("marin", df$EVTYPE), 
+                    "thunderstorm wind", df$EVTYPE)
+df$EVTYPE <- ifelse(grepl("snow", df$EVTYPE) & grepl("lake", df$EVTYPE), 
+                    "lake-effect snow", df$EVTYPE)
+df$EVTYPE <- ifelse(grepl("snow", df$EVTYPE) & !grepl("lake", df$EVTYPE), 
+                    "heavy snow", df$EVTYPE)
+df$EVTYPE <- ifelse(grepl("high wind", df$EVTYPE) & !grepl("marin", df$EVTYPE), 
+                    "high wind", df$EVTYPE)
+df$EVTYPE <- ifelse(grepl("rain", df$EVTYPE), "heavy rain", df$EVTYPE)
+df$EVTYPE <- ifelse(grepl("chill", df$EVTYPE) & grepl("extre", df$EVTYPE), 
+                    "extreme cold/wind chill", df$EVTYPE)
+df$EVTYPE <- ifelse(grepl("chill", df$EVTYPE) & !grepl("extre", df$EVTYPE), 
+                    "cold/wind chill", df$EVTYPE)
+df$EVTYPE <- ifelse(grepl("heat", df$EVTYPE) & grepl("ex", df$EVTYPE), 
+                    "excessive heat", df$EVTYPE)
+df$EVTYPE <- ifelse(grepl("heat", df$EVTYPE) & !grepl("ex", df$EVTYPE), 
+                    "heat", df$EVTYPE)
+df$EVTYPE <- ifelse(grepl("sleet", df$EVTYPE), "sleet", df$EVTYPE)
+df$EVTYPE <- ifelse(grepl("fire", df$EVTYPE), "wildfire", df$EVTYPE)
+df$EVTYPE <- ifelse(grepl("cold", df$EVTYPE) & !grepl("chill", df$EVTYPE), 
+                    "cold/wind chill", df$EVTYPE)
+df$EVTYPE <- ifelse((grepl("freez", df$EVTYPE))|(grepl("frost", df$EVTYPE)) &
+                      !grepl("fog", df$EVTYPE), "frost/freeze", df$EVTYPE)
+df$EVTYPE <- ifelse(grepl("surf", df$EVTYPE), "high surf", df$EVTYPE)
+df$EVTYPE <- ifelse(grepl("bliz", df$EVTYPE), "blizzard", df$EVTYPE)
+df$EVTYPE <- ifelse(grepl("slid", df$EVTYPE), "avalanche", df$EVTYPE)
+df$EVTYPE <- ifelse(grepl("summary", df$EVTYPE), "none", df$EVTYPE)
+df$EVTYPE <- ifelse(grepl("watersp", df$EVTYPE), "waterspout", df$EVTYPE)
+df$EVTYPE <- ifelse(grepl("burst", df$EVTYPE), "microburst", df$EVTYPE)
+length(unique(df$EVTYPE))
+```
+
+
+We create the variable "event" with the result of the function "amatch" on
+the variable "EVTYPE".
+```{r amatch, cache=TRUE}
+# List of correct events to map to registered event types
+EVTYPE_ok <- c("Astronomical Low Tide", "Avalanche", "Blizzard","Coastal Flood",
+               "Cold/Wind Chill", "Debris Flow","Dense Fog","Dense Smoke",
+               "Drought","Dust Devil","Dust Storm", "Excessive Heat",
+               "Extreme Cold/Wind Chill","Flash Flood", "Flood", "Frost/Freeze",
+               "Funnel Cloud", "Freezing Fog","Hail","Heat","Heavy Rain",
+               "Heavy Snow","High Surf","High Wind", "Hurricane (Typhoon)",
+               "Ice Storm", "Lake-Effect Snow","Lakeshore Flood","Lightning",
+               "Marine Hail","Marine High Wind", "Marine Strong Wind",
+               "Marine Thunderstorm Wind", "Rip Current","Seiche","Sleet",
+               "Storm Surge/Tide","Strong  Wind","Thunderstorm Wind","Tornado",
+               "Tropical Depression","Tropical Storm","Tsunami","Volcanic Ash", 
+               "Waterspout","Wildfire", "Winter Storm", "Winter Weather")
+EVTYPE_ok <- tolower(EVTYPE_ok)
+df <- mutate(df, event = EVTYPE_ok[amatch(EVTYPE, EVTYPE_ok, nomatch = 1,
+                                          maxDist = 5)])
+unique(df$event)
+
+```
+
+Only two categories of the 48 possible EVTYPE categories have remained unmapped.
+```{r, cache=TRUE}
+EVTYPE_ok[!(EVTYPE_ok %in% df$event)]
+```
+
+We convert the variable "event" into a categorical variable.
+```{r event-categorical, cache=TRUE}
+# transform variables to categorical 
+df <- transform(df, event = factor(event))
+str(df)
+```
+
+We create the table "damage_event" with the total and average of deaths, 
+injuries, property damage and crop damage.
+```{r damage_event, cache=TRUE}
+# Note the use of the '.' function to allow date be used without quoting
+damage_event <- ddply(df, .(event), summarize,
+                           property_damage_sum = sum(prop_damage),
+                           crop_damage_sum = sum(crop_damage),
+                      fatalities_sum = sum(FATALITIES),
+                      injuries_sum = sum(INJURIES),
+                      property_damage_mean = mean(prop_damage),
+                           crop_damage_mean = mean(crop_damage),
+                      fatalities_mean = mean(FATALITIES),
+                      injuries_mean = mean(INJURIES))
+
+
+
+
+```
+
+We create bar charts of total fatalities and injuries with "ggplot".
+
+
+## Results
+We can observe how tornadoes are the major cause of deaths and injuries.
+
+In the case of fatalities, the following causes are excessive heat, heat,
+flash floods and, surprisingly, lightning.
+On the other hand, in the case of injuries, floods replace flash floods and 
+"Thunderstorm Wind" comes into play. The huge difference between the main cause 
+(tornadoes) and the second one ("Thunderstorm Wind"), almost a factor of 10, 
+stands out.
+
+```{r fatalities_injuries_plot, cache=TRUE}
+# fatalities_sum_plot
+sub <- arrange(damage_event, desc(fatalities_sum))[1:5,]
+fatalities_sum_plot <- ggplot(data = sub, 
+                               aes(x = reorder(event, -fatalities_sum), 
+                                   y = fatalities_sum)) +
+  geom_bar(stat='identity', fill = 'deepskyblue1') +
+        theme_minimal() +
+        theme(panel.grid.major = element_blank(),
+              panel.grid.minor = element_blank(),
+              axis.title.y = element_blank(),
+              axis.ticks.y=element_blank(),
+              axis.text.y=element_blank(),
+              axis.text.x = element_text(size=12, angle=90),
+              panel.background = element_blank()) +
+        geom_text(aes(label = round(fatalities_sum, 1)), 
+                  color = 'white', vjust = +1.3, size = 3.5) +
+        labs(x = NULL) +
+        ggtitle('Total fatalities')
+
+# injuries_sum_plot
+sub <- arrange(damage_event, desc(injuries_sum))[1:5,]
+injuries_sum_plot <- ggplot(data = sub, 
+                               aes(x = reorder(event, -injuries_sum), 
+                                   y = injuries_sum)) +
+  geom_bar(stat='identity', fill = 'deepskyblue1') +
+        theme_minimal() +
+        theme(panel.grid.major = element_blank(),
+              panel.grid.minor = element_blank(),
+              axis.title.y = element_blank(),
+              axis.ticks.y=element_blank(),
+              axis.text.y=element_blank(),
+              axis.text.x = element_text(size=9, angle=90),
+              panel.background = element_blank()) +
+        geom_text(aes(label = round(injuries_sum, 1)), 
+                  color = 'white', vjust = +1.3, size = 3.5) +
+        labs(x = NULL) +
+        ggtitle('Total injuries')
+
+grid.arrange(fatalities_sum_plot, injuries_sum_plot, nrow = 1)
+```
+
+Floods are the greatest cause of property damage followed by hurricanes and tornadoes, although the most damaging on average per event are hurricanes and Storm Surge/Tide.
+```{r property plot}
+# property_sum_plot
+sub <- arrange(damage_event, desc(property_damage_sum))[1:5,]
+property_sum_plot <- ggplot(data = sub, 
+                               aes(x = reorder(event, -property_damage_sum), 
+                                   y = property_damage_sum/1e9)) +
+  geom_bar(stat='identity', fill = 'deepskyblue1') +
+        theme_minimal() +
+        theme(panel.grid.major = element_blank(),
+              panel.grid.minor = element_blank(),
+              axis.title.y = element_blank(),
+              axis.ticks.y=element_blank(),
+              axis.text.y=element_blank(),
+              axis.text.x = element_text(size=12, angle=90),
+              panel.background = element_blank()) +
+        geom_text(aes(label = round(property_damage_sum/1e9, 0)), 
+                  color = 'white', vjust = +1.3, size = 3.5) +
+        labs(x = NULL) +
+        ggtitle('Total Property Damage (B$)')
+
+# property_mean_plot
+sub <- arrange(damage_event, desc(property_damage_mean))[1:5,]
+property_mean_plot <- ggplot(data = sub, 
+                               aes(x = reorder(event, -property_damage_mean), 
+                                   y = property_damage_mean/1e6)) +
+  geom_bar(stat='identity', fill = 'deepskyblue1') +
+        theme_minimal() +
+        theme(panel.grid.major = element_blank(),
+              panel.grid.minor = element_blank(),
+              axis.title.y = element_blank(),
+              axis.ticks.y=element_blank(),
+              axis.text.y=element_blank(),
+              axis.text.x = element_text(size=12, angle=90),
+              panel.background = element_blank()) +
+        geom_text(aes(label = round(property_damage_mean/1e6, 0)), 
+                  color = 'deepskyblue1', vjust = -0.3, size = 3.5) +
+        labs(x = NULL) +
+        ggtitle('Mean Property Damage (M$)')
+grid.arrange(property_sum_plot, property_mean_plot, nrow = 1)
+```
+```{r crop_plot}
+# crop_sum_plot
+sub <- arrange(damage_event, desc(crop_damage_sum))[1:5,]
+crop_sum_plot <- ggplot(data = sub, 
+                               aes(x = reorder(event, -crop_damage_sum), 
+                                   y = crop_damage_sum/1e9)) +
+  geom_bar(stat='identity', fill = 'deepskyblue1') +
+        theme_minimal() +
+        theme(panel.grid.major = element_blank(),
+              panel.grid.minor = element_blank(),
+              axis.title.y = element_blank(),
+              axis.ticks.y=element_blank(),
+              axis.text.y=element_blank(),
+              axis.text.x = element_text(size=12, angle=90),
+              panel.background = element_blank()) +
+        geom_text(aes(label = round(crop_damage_sum/1e9, 1)), 
+                  color = 'white', vjust = +1.3, size = 3.5) +
+        labs(x = NULL) +
+        ggtitle('Total crop Damage (B$)')
+
+# crop_mean_plot
+sub <- arrange(damage_event, desc(crop_damage_mean))[1:5,]
+crop_mean_plot <- ggplot(data = sub, 
+                               aes(x = reorder(event, -crop_damage_mean), 
+                                   y = crop_damage_mean/1e6)) +
+  geom_bar(stat='identity', fill = 'deepskyblue1') +
+        theme_minimal() +
+        theme(panel.grid.major = element_blank(),
+              panel.grid.minor = element_blank(),
+              axis.title.y = element_blank(),
+              axis.ticks.y=element_blank(),
+              axis.text.y=element_blank(),
+              axis.text.x = element_text(size=12, angle=90),
+              panel.background = element_blank()) +
+        geom_text(aes(label = round(crop_damage_mean/1e6, 1)), 
+                  color = 'deepskyblue1', vjust = -0.3, size = 3.5) +
+        labs(x = NULL) +
+        ggtitle('Mean crop Damage (M$)')
+grid.arrange(crop_sum_plot, crop_mean_plot, nrow = 1)
+```
+
